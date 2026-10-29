@@ -88,6 +88,11 @@ def forward_once(args) -> None:
 
     log("采集 loopback#%d @%dHz/%dch -> 虚拟声卡 #%d %s" % (lb_idx, sr, ch, cable_idx, cable_name))
 
+    try:
+        lb_name = pya.get_device_info_by_index(lb_idx)["name"]
+    except Exception:
+        lb_name = "?"
+
     stream = pya.open(
         format=pyaudio.paInt16,
         channels=ch,
@@ -99,8 +104,22 @@ def forward_once(args) -> None:
         device=cable_idx, samplerate=sr, channels=2, dtype="float32", blocksize=0
     )
     out.start()
+    last_check = time.time()
     try:
         while True:
+            now = time.time()
+            if now - last_check >= 30:
+                last_check = now
+                # 默认输出可能被切换/设备重枚举，旧 loopback 句柄会静音，
+                # 检测到漂移即抛异常触发重连
+                try:
+                    cur = pya.get_default_wasapi_loopback()
+                    cur_key = (cur["index"], cur["name"]) if cur else None
+                except Exception:
+                    cur_key = None
+                if cur_key != (lb_idx, lb_name):
+                    log("默认输出已变化 %s -> %s，重建流" % (lb_name, cur_key))
+                    raise RuntimeError("loopback drift: 默认输出切换")
             raw = stream.read(1024, exception_on_overflow=False)
             frames = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
             if ch == 2:
